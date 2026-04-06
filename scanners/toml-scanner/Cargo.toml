@@ -9,4 +9,9 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1.0.69"
 crates-scanner = { path = "../.." }
-toml = "0.7.2"
+# toml = "0.7.2"
+
+toml.git = "https://github.com/toml-rs/toml.git"
+serde = { version = "1", features = ["derive"] }
+cargo-util-schemas = "*"
+toml_v08 = { package = "toml", version = "0.8" }

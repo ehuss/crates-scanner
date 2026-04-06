@@ -3,7 +3,7 @@ use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use semver::Version;
 use std::collections::hash_map::{Entry, HashMap};
-use std::fs::{read_dir, File};
+use std::fs::{File, read_dir};
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ pub fn scan_compressed<Filt, Scan>(
     scanner: Scan,
 ) where
     Filt: Fn(&Path) -> bool + Sync,
-    Scan: Fn(&Path, &str) -> Result<()> + Sync,
+    Scan: Fn(&Path, &Path, &str) -> Result<()> + Sync,
 {
     let paths = match versions {
         Versions::All => collect_all_crates(crates_path),
@@ -39,6 +39,7 @@ pub fn scan_compressed<Filt, Scan>(
     let scan_errors = AtomicU32::new(0);
 
     paths.par_iter().for_each(|crate_path| {
+        let crate_filename = crate_path.file_name().unwrap();
         let f = GzDecoder::new(File::open(crate_path).unwrap());
         let mut archive = Archive::new(f);
         for entry in archive.entries().unwrap() {
@@ -51,7 +52,7 @@ pub fn scan_compressed<Filt, Scan>(
                 }
             };
             let entry_path = match entry.path() {
-                Ok(p) => p,
+                Ok(p) => p.into_owned(),
                 Err(e) => {
                     load_errors.fetch_add(1, Ordering::SeqCst);
                     eprintln!("path decode error {crate_path:?}: {e}");
@@ -59,12 +60,10 @@ pub fn scan_compressed<Filt, Scan>(
                 }
             };
             if filter(&entry_path) {
-                let mut display_path = PathBuf::from(entry_path.file_name().unwrap());
-                display_path.push(entry_path);
                 let mut contents = String::new();
                 if let Err(e) = entry.read_to_string(&mut contents) {
                     load_errors.fetch_add(1, Ordering::SeqCst);
-                    eprintln!("decode error {display_path:?}: {e}");
+                    eprintln!("decode error {crate_filename:?} {entry_path:?}: {e}");
                     break;
                 }
                 let progress = scanned.fetch_add(1, Ordering::SeqCst);
@@ -72,9 +71,9 @@ pub fn scan_compressed<Filt, Scan>(
                     eprintln!("processed {progress}");
                 }
 
-                if let Err(e) = scanner(&display_path, &contents) {
+                if let Err(e) = scanner(&crate_path, &entry_path, &contents) {
                     eprintln!(
-                        "{ERROR} scanning {display_path:?}: {e:?}\n\
+                        "{ERROR} scanning {crate_filename:?} {entry_path:?}: {e:?}\n\
                             contents:\n{contents}"
                     );
                     scan_errors.fetch_add(1, Ordering::SeqCst);

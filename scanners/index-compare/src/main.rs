@@ -1,5 +1,6 @@
 //! Compares manifests to the index.
 
+use std::ffi::OsStr;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -14,8 +15,7 @@ fn main() {
         .next()
         .expect("second argument must be a path to the index");
 
-    // let mut all_links = HashMap::new();
-    let all_links: HashMap<String, String> = walkdir::WalkDir::new(index_path)
+    let index: HashMap<String, _> = walkdir::WalkDir::new(index_path)
         .into_iter()
         .filter_entry(|entry| {
             let name = entry.file_name().to_str().unwrap();
@@ -23,60 +23,80 @@ fn main() {
         })
         .par_bridge()
         .filter(|entry| entry.as_ref().unwrap().file_type().is_file())
-        .flat_map(|entry| {
+        .filter_map(|entry| {
             let entry = entry.unwrap();
             let contents = std::fs::read_to_string(entry.path()).unwrap();
-            contents
+            let versions = contents
                 .lines()
-                .filter_map(|line| {
-                    let v = serde_json::from_str::<serde_json::Value>(line).unwrap();
-                    v.get("links").map(|links| {
-                        let key = format!(
-                            "{}-{}",
-                            v["name"].as_str().unwrap(),
-                            v["vers"].as_str().unwrap()
-                        );
-                        (key, links.as_str().unwrap().to_string())
-                    })
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            if versions.is_empty() {
+                return None
+            } else {
+                Some((versions[0]["name"].as_str().unwrap().to_string(), versions))
+            }
         })
         .collect();
-    eprintln!("found {} crates with links", all_links.len());
+    eprintln!("found {} crates", index.len());
 
     crates_scanner::scan_compressed(
         Path::new(&crates_path),
         crates_scanner::Versions::All,
         |path| path.file_name().map_or(false, |n| n == "Cargo.toml"),
-        |path, contents| check_manifest(path, contents, &all_links),
+        |crate_filename, path, contents| check_manifest(crate_filename, path, contents, &index),
     );
 }
 
-fn check_manifest(path: &Path, contents: &str, all_links: &HashMap<String, String>) -> Result<()> {
+// "sysinfo-0.0.2.crate" "sysinfo-0.0.2/Cargo.toml"
+
+fn check_manifest(crate_filename: &OsStr, path: &Path, contents: &str, index: &HashMap<String, Vec<serde_json::Value>>) -> Result<()> {
+    // eprintln!("{crate_filename:?} {path:?}", );
+    let crate_filename = crate_filename.to_str().unwrap();
+    let no_ext = &crate_filename[..crate_filename.len()-6];
+    let inside_path = path.components().next().unwrap();
+    match inside_path {
+        std::path::Component::Normal(n) => {
+            if n != no_ext {
+                eprintln!("inside component does not match crate filename {n:?} != {no_ext:?}");
+            }
+        }
+        _ => {panic!("unexpected component");}
+    }
     let v = match toml::from_str::<toml::Value>(&contents) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("failed to parse toml {:?}: {}", path, e);
+        Err(_e) => {
+            eprintln!("failed to parse toml {:?}", path);
             return Ok(());
         }
     };
-    let pkg_str = path
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap();
-    let index_links = all_links.get(pkg_str);
-    let manifest_links = v
-        .get("package")
-        .unwrap_or_else(|| v.get("project").unwrap())
-        .get("links");
-    match (manifest_links, index_links) {
-        (Some(_), Some(_)) => {}
-        (Some(_), None) => println!("{pkg_str} has manifest, missing registry"),
-        (None, Some(_)) => println!("{pkg_str} has registry, not manifest!?"),
-        (None, None) => {}
+    let package = v.get("package").unwrap_or_else(|| v.get("project").unwrap());
+    let name = package["name"].as_str().unwrap();
+    let version = package["version"].as_str().unwrap();
+    let index_versions = match index.get(name) {
+        Some(v) => v,
+        None => {
+            eprintln!("couldn't find index entry that matches package.name=\"{name:?}\" in {crate_filename:?}");
+            return Ok(());
+        }
+    };
+    let index_entry = match index_versions.iter().find(|vers| vers["vers"].as_str().unwrap() == version) {
+        Some(e) => e,
+        None => {
+            eprintln!("couldn't find index entry for {name:?} with version=\"{version:?}\"");
+            let vs: Vec<_> = index_versions.iter().map(|v| v["vers"].as_str().unwrap()).collect();
+            eprintln!("versions available: {vs:?}");
+            return Ok(());
+        }
+    };
+    if index_entry.get("rust_version") != package.get("rust_version") {
+        eprintln!("out of sync: rust_version ({:?} != {:?}) — {name} {version}",
+            index_entry.get("rust_version"), package.get("rust_version"));
     }
+    // features
+    let index_deps = index_entry["deps"].as_array().unwrap();
+
+
     Ok(())
 }

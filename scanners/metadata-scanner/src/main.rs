@@ -1,7 +1,7 @@
 //! Uses cargo_metadata on all crates.
 
 use anyhow::bail;
-use cargo_metadata::MetadataCommand;
+use cargo_metadata::*;
 use std::path::Path;
 
 fn main() {
@@ -22,14 +22,21 @@ fn main() {
             }
         };
         assert_eq!(meta.packages.len(), 1);
-        for dep in &meta.packages[0].dependencies {
-            if dep.features.iter().any(|f| f.starts_with('_')) {
-                println!(
-                    "{:?} depends on {} with features: {:?}",
-                    path, dep.name, dep.features
-                );
+        for target in &meta.packages[0].targets {
+            if target.kind.iter().any(|t| *t == TargetKind::Bin) {
+                if target.name.contains('_') {
+                    println!("found `{}` in {}", target.name, path.display());
+                }
             }
         }
+        // for dep in &meta.packages[0].dependencies {
+        //     if dep.features.iter().any(|f| f.starts_with('_')) {
+        //         println!(
+        //             "{:?} depends on {} with features: {:?}",
+        //             path, dep.name, dep.features
+        //         );
+        //     }
+        // }
 
         Ok(())
     });

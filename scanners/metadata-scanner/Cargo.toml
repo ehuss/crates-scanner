@@ -8,5 +8,5 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.69"
-cargo_metadata = "0.15.3"
+cargo_metadata = "0.23.1"
 crates-scanner = { path = "../.." }
